@@ -232,7 +232,6 @@ for idx, chunk in enumerate(chunks, start=1):
     ])
 
     prompt = f"""
-prompt = f"""
 다음 뉴스 리스트에서 티맵모빌리티 홍보팀 기준으로 "이슈 단위 브리핑 가치"가 높은 기사만 선별하라.
 
 중요: 기사 단위가 아니라 "이슈 단위"로 판단하라.
