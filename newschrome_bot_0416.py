@@ -5,16 +5,11 @@ from datetime import datetime, timedelta
 from openai import OpenAI
 import time
 import html
-from urllib.parse import quote
 
 print("시작됨")
 
 # ✅ API 키
-client = OpenAI(
-    api_key=os.environ["OPENAI_API_KEY"]
-)
-
-print(client.models.list())
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 # ✅ 네이버 API 키
 NAVER_CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
@@ -54,39 +49,21 @@ seen_titles = set()
 def normalize_title(title):
     return html.unescape(title).replace(" ", "").lower()
 
-# 🔹 1차 필터 (추가)
+# ✅ 완화된 필터 (핵심)
 def pre_filter(news):
     result = []
 
-    FILTER_KEYWORDS = [
-        "티맵", "카카오", "자율주행", "전기차",
-        "AI", "지도", "플랫폼", "데이터", "로보택시"
-    ]
-
-    EXCLUDE_WORDS = [
-        "이벤트", "오픈", "기념", "화제", "눈길", "인기",
-        "출시", "단순", "공개", "참여"
-    ]
-
-    IMPORTANT = [
-        "규제", "정책", "자율주행", "전기차",
-        "데이터", "AI", "플랫폼", "지도",
-        "로보택시", "투자", "협력", "MOU"
-    ]
-
     for title, link, category in news:
 
-        if not any(k in title for k in FILTER_KEYWORDS):
+        if not title or not link:
             continue
 
-        if any(x in title for x in EXCLUDE_WORDS):
+        if len(title) < 15 or len(title) > 120:
             continue
 
-        if len(title) < 15 or len(title) > 100:
-            continue
-
-        score = sum(1 for k in IMPORTANT if k in title)
-        if score == 0:
+        if any(x in link for x in [
+            "blog", "cafe", "sports", "entertain"
+        ]):
             continue
 
         result.append((title, link, category))
@@ -102,7 +79,7 @@ def get_naver_news(keyword):
     }
     params = {
         "query": keyword,
-        "display": 30,
+        "display": 50,
         "sort": "date"
     }
 
@@ -117,27 +94,13 @@ def get_naver_news(keyword):
         title = html.unescape(item["title"])
         link = item["link"]
 
+        # 🔥 네이버 원문 링크 우선
         if "n.news.naver.com" in link:
             link = item.get("originallink", link)
 
         results.append((title, link))
 
     return results
-
-# 🔹 Google News
-def get_google_news(keyword):
-    try:
-        encoded_keyword = quote(keyword)
-        url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
-        feed = feedparser.parse(url)
-
-        results = []
-        for entry in feed.entries[:5]:
-            results.append((entry.title, entry.link))
-
-        return results
-    except:
-        return []
 
 print("\n===== 뉴스 수집 시작 =====\n")
 
@@ -147,32 +110,16 @@ for category, keywords in KEYWORDS.items():
     for keyword in keywords:
         print(f"[수집 키워드] {keyword}")
 
-        naver_news = get_naver_news(keyword)
-        google_news = get_google_news(keyword)
+        news_list = get_naver_news(keyword)
 
-        combined = naver_news + google_news
-
-        for title, link in combined:
+        for title, link in news_list:
             try:
                 norm = normalize_title(title)
-
-                if not title or not link:
-                    continue
-
-                # 🔥 버그 수정
-                if len(title) < 15 or len(title) > 100:
-                    continue
 
                 if norm in seen_titles:
                     continue
 
                 if link in seen_links:
-                    continue
-
-                if any(x in link for x in [
-                    "blog", "cafe", "help", "search",
-                    "sports", "entertain"
-                ]):
                     continue
 
                 seen_titles.add(norm)
@@ -185,7 +132,7 @@ for category, keywords in KEYWORDS.items():
 print("\n===== 수집 완료 =====")
 print("총 기사 개수:", len(all_news))
 
-# 🔥 여기 추가 (핵심)
+# 🔥 필터 적용
 all_news = pre_filter(all_news)
 print("필터링 후 기사 개수:", len(all_news))
 
@@ -193,7 +140,7 @@ if not all_news:
     print("수집된 기사가 없습니다.")
     raise SystemExit
 
-# 🔹 GPT 재시도 함수
+# 🔹 GPT 호출
 def call_gpt(prompt):
     for i in range(3):
         try:
@@ -206,7 +153,7 @@ def call_gpt(prompt):
 
         except Exception as e:
             print(f"재시도 {i+1}:", e)
-            time.sleep(5)
+            time.sleep(3)
 
     return ""
 
@@ -216,15 +163,13 @@ def chunk_list(data, size):
 
 today = (datetime.utcnow() + timedelta(hours=9)).strftime("%y%m%d")
 
-partial_results = []
-
 print("\n===== GPT 1차 선별 시작 =====\n")
 
-# 🔥 chunk 축소
-chunks = list(chunk_list(all_news, 30))
+chunks = list(chunk_list(all_news, 50))
+partial_results = []
 
 for idx, chunk in enumerate(chunks, start=1):
-    print(f"[{idx}/{len(chunks)}] GPT 1차 선별 중...")
+    print(f"[{idx}/{len(chunks)}] 처리 중...")
 
     news_text = "\n".join([
         f"{category} | {title} | {link}"
@@ -236,24 +181,27 @@ for idx, chunk in enumerate(chunks, start=1):
 
 중요: 기사 단위가 아니라 "이슈 단위"로 판단하라.
 
+단, 과도하게 제거하지 말고 활용 가능성이 있는 기사는 최대한 포함하라.
+
 선별 원칙:
 1. 동일 기사뿐 아니라 "같은 이슈"도 하나만 남겨라.
    - 동일 상품/서비스/발표/사건이면 1건만 선택
    - 가장 정보량 많고 대표성 있는 기사만 남겨라
 
-2. 아래 기준 중 하나라도 충족하지 못하면 제거하라:
+2. 아래 기준 중 하나라도 충족하면 포함:
    - 사업 영향 (매출, 전략, 제휴, 규제 영향)
    - 시장 변화 신호 (경쟁 구도 변화, 기술 방향성)
    - PR 활용 가능성 (이슈 대응, 메시지 활용 가능)
 
 3. 특히 제거:
-   - 단순 반복 보도 (보험 할인, 출시 기사 등 유사 반복)
-   - 정보 없는 단순 발표 기사
-   - 산업과 직접 관련 없는 IT 일반 뉴스
+   - 완전히 동일한 기사 (같은 링크)
+   - 명백히 중복되는 단순 반복 기사
 
 4. 반드시 포함 고려:
-   - 티맵 직접 기사보다도 "향후 사업에 영향을 줄 외부 변화"
-     (플랫폼 규제, 지도/데이터 경쟁, 빅테크 전략 변화)
+   - 티맵 직접 기사
+   - 경쟁사 전략 변화
+   - 플랫폼/지도/데이터 경쟁
+   - 규제 및 정책 변화
 
 우선순위:
 1) 티맵 직접 영향
@@ -265,24 +213,20 @@ for idx, chunk in enumerate(chunks, start=1):
 출력:
 카테고리 | 기사 제목 | URL
 
+출력:
+카테고리 | 기사 제목 | URL
+
 뉴스:
 {news_text}
 """
 
     result = call_gpt(prompt)
-
     if result:
         partial_results.append(result)
 
-    time.sleep(2)
+    time.sleep(1.5)
 
-print("\n===== GPT 1차 선별 완료 =====\n")
-
-if not partial_results:
-    print("GPT 실패 → 원본 뉴스 출력")
-    for title, link, category in all_news[:20]:
-        print(category, title, link)
-    raise SystemExit
+print("\n===== 최종 브리핑 생성 =====\n")
 
 final_input = "\n".join(partial_results)
 
@@ -291,10 +235,13 @@ final_prompt = f"""
 이를 "이슈 중심 미디어 브리핑"으로 재구성하라.
 
 핵심:
-- 같은 이슈는 1건만 남기기 (중복 기사 제거)
+- 같은 이슈는 반드시 1건만 남길 것 (중복 기사 제거)
 - 기사 요약 금지
 - 설명 문장 금지
 - 반드시 "기사 제목 + URL" 형태로만 출력
+
+중요:
+- 지나치게 많이 제거하지 말고, 브리핑 활용 가치가 있는 기사는 최대한 포함하라
 
 선별 기준:
 1. 동일 이슈 중복 금지 (대표 기사 1개만 선택)
@@ -306,30 +253,28 @@ final_prompt = f"""
    - 기술 변화가 사업에 미치는 영향
 
 3. 반드시 포함:
-   - 티맵 관련 핵심 기사
+   - 티맵 관련 핵심 기사 (있을 경우 최상단 배치)
    - 경쟁사 전략 변화
    - 플랫폼/데이터/지도 경쟁
    - 규제 및 정책 변화
 
 4. 반드시 제거:
-   - 단순 발표 / 할인 / 출시 반복 기사
+   - 완전히 동일한 기사
+   - 단순 발표 / 할인 / 이벤트 / 반복 기사
    - PR 활용 가치 없는 기사
 
 기사 수 규칙:
 - 자사 및 경쟁사 동향: 최대 7건
 - 모빌리티 동향: 최대 5건
 - IT 업계 동향: 최대 5건
-- 총 15건 내외
+- 총 15건 내외 (너무 적거나 많지 않게 균형 맞출 것)
 
 정렬 규칙:
-1. 자사 최상단
+1. 자사 기사 최상단
 2. 같은 이슈끼리 묶기
 3. 중요도 순 정렬
 
 출력 형식 (절대 변경 금지):
-- 아래 형식을 한 글자도 바꾸지 말 것
-- 설명 문장 절대 추가 금지
-- 기사 제목과 URL만 출력
 
 [미디어브리핑-{today}]
 
@@ -348,15 +293,18 @@ URL
 기사 제목
 URL
 
+⚠️ 절대 규칙:
+- 위 형식에서 한 글자도 바꾸지 말 것
+- 설명, 요약, 추가 문장 절대 금지
+- 기사 제목과 URL 외 아무 것도 출력하지 말 것
+
 뉴스:
 {final_input}
 """
 
-print("\n===== 최종 브리핑 생성 중 =====\n")
-
 final_result = call_gpt(final_prompt)
 
-print("\n===== 최종 미디어브리핑 =====\n")
+print("\n===== 결과 =====\n")
 print(final_result)
 
 requests.post(
